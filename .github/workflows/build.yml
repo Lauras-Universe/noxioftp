@@ -39,6 +39,9 @@ jobs:
             platform: linux/amd64
             artifact: sftp-client-linux
     runs-on: ${{ matrix.os }}
+    env:
+      # safety margin for the Monaco bundle; it builds in ~1.6 GB since it is imported selectively
+      NODE_OPTIONS: --max-old-space-size=4096
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
