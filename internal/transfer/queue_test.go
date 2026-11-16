@@ -186,3 +186,40 @@ func TestFIFOWithLimitedWorkers(t *testing.T) {
 		}
 	}
 }
+
+func TestDirectoryTransferFollowsSymlinksAndSkipsLoops(t *testing.T) {
+	q, _ := newQ(t)
+	src, dst := t.TempDir(), t.TempDir()
+	write(t, filepath.Join(src, "tree", "real.txt"), "R")
+	write(t, filepath.Join(src, "outside", "o.txt"), "O")
+	os.Symlink(filepath.Join(src, "tree", "real.txt"), filepath.Join(src, "tree", "filelink"))
+	os.Symlink(filepath.Join(src, "outside"), filepath.Join(src, "tree", "dirlink"))
+	os.Symlink(filepath.Join(src, "tree"), filepath.Join(src, "tree", "loop"))      // points to its own parent
+	os.Symlink(filepath.Join(src, "nowhere"), filepath.Join(src, "tree", "broken")) // dangling
+
+	j := waitFinal(t, q, q.Enqueue(Upload, "tree", filepath.Join(src, "tree"), filepath.Join(dst, "tree"), Overwrite).ID)
+	if j.Status != Done {
+		t.Fatalf("job = %+v", j)
+	}
+	for rel, want := range map[string]string{"real.txt": "R", "filelink": "R", "dirlink/o.txt": "O"} {
+		if b, err := os.ReadFile(filepath.Join(dst, "tree", rel)); err != nil || string(b) != want {
+			t.Errorf("%s = %q, %v; want %q", rel, b, err, want)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dst, "tree", "loop")); !os.IsNotExist(err) {
+		t.Error("loop link was followed")
+	}
+	if j.Note == "" {
+		t.Error("expected a note about skipped links")
+	}
+}
+
+func TestSinglePathCreatesMissingParents(t *testing.T) {
+	q, _ := newQ(t)
+	src, dst := t.TempDir(), t.TempDir()
+	write(t, filepath.Join(src, "f"), "x")
+	j := waitFinal(t, q, q.Enqueue(Upload, "f", filepath.Join(src, "f"), filepath.Join(dst, "a", "b", "f"), Overwrite).ID)
+	if j.Status != Done {
+		t.Fatalf("job = %+v", j)
+	}
+}

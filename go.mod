@@ -3,7 +3,10 @@ module sftp-client
 go 1.26.0
 
 require (
+	github.com/fclairamb/ftpserverlib v0.33.2
+	github.com/jlaffaye/ftp v0.2.4
 	github.com/pkg/sftp v1.13.12
+	github.com/spf13/afero v1.15.0
 	github.com/wailsapp/wails/v2 v2.17.1
 	github.com/zalando/go-keyring v0.2.8
 	golang.org/x/crypto v0.59.0

@@ -58,6 +58,10 @@ export function LocalMkdir(arg1) {
   return window['go']['main']['App']['LocalMkdir'](arg1);
 }
 
+export function LocalMove(arg1, arg2) {
+  return window['go']['main']['App']['LocalMove'](arg1, arg2);
+}
+
 export function LocalRename(arg1, arg2) {
   return window['go']['main']['App']['LocalRename'](arg1, arg2);
 }
@@ -68,6 +72,10 @@ export function LocalRoots() {
 
 export function PickKeyFile() {
   return window['go']['main']['App']['PickKeyFile']();
+}
+
+export function PlanSync(arg1, arg2, arg3) {
+  return window['go']['main']['App']['PlanSync'](arg1, arg2, arg3);
 }
 
 export function RemoteChmod(arg1, arg2) {
@@ -86,6 +94,10 @@ export function RemoteMkdir(arg1) {
   return window['go']['main']['App']['RemoteMkdir'](arg1);
 }
 
+export function RemoteMove(arg1, arg2) {
+  return window['go']['main']['App']['RemoteMove'](arg1, arg2);
+}
+
 export function RemoteReadText(arg1) {
   return window['go']['main']['App']['RemoteReadText'](arg1);
 }
@@ -102,6 +114,14 @@ export function RetryTransfer(arg1) {
   return window['go']['main']['App']['RetryTransfer'](arg1);
 }
 
+export function RunSync(arg1) {
+  return window['go']['main']['App']['RunSync'](arg1);
+}
+
 export function SaveProfile(arg1, arg2) {
   return window['go']['main']['App']['SaveProfile'](arg1, arg2);
+}
+
+export function SetDirty(arg1) {
+  return window['go']['main']['App']['SetDirty'](arg1);
 }

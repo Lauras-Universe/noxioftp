@@ -140,3 +140,61 @@ func TestHostKeysNoConfirmRefuses(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+func TestProtocolsAndJumpHosts(t *testing.T) {
+	s, _ := NewStore(filepath.Join(t.TempDir(), "c.json"), memSecrets{})
+
+	// defaults per protocol
+	for proto, port := range map[string]int{"": 22, ProtoSFTP: 22, ProtoFTP: 21, ProtoFTPS: 21, ProtoFTPSImplicit: 990} {
+		p, err := s.Save(Profile{Host: "h", User: "u", AuthType: AuthPassword, Protocol: proto}, "")
+		if err != nil || p.Port != port {
+			t.Errorf("protocol %q: port %d, err %v", proto, p.Port, err)
+		}
+	}
+	if _, err := s.Save(Profile{Host: "h", User: "u", AuthType: AuthPassword, Protocol: "gopher"}, ""); err == nil {
+		t.Error("unknown protocol accepted")
+	}
+	if _, err := s.Save(Profile{Host: "h", User: "u", AuthType: AuthKey, KeyPath: "k", Protocol: ProtoFTP}, ""); err == nil {
+		t.Error("key auth accepted for FTP")
+	}
+
+	jump, err := s.Save(Profile{Name: "bastion", Host: "b", User: "u", AuthType: AuthPassword}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := s.Save(Profile{Host: "inner", User: "u", AuthType: AuthPassword, JumpID: jump.ID}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Save(Profile{Host: "h", User: "u", AuthType: AuthPassword, Protocol: ProtoFTP, JumpID: jump.ID}, ""); err == nil {
+		t.Error("jump host accepted for FTP")
+	}
+	if _, err := s.Save(Profile{Host: "h", User: "u", AuthType: AuthPassword, JumpID: "nope"}, ""); err == nil {
+		t.Error("unknown jump profile accepted")
+	}
+	self := p
+	self.JumpID = p.ID
+	if _, err := s.Save(self, ""); err == nil {
+		t.Error("profile accepted as its own jump host")
+	}
+
+	// deleting the bastion clears the reference
+	if err := s.Delete(jump.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.Get(p.ID); got.JumpID != "" {
+		t.Errorf("dangling jump reference: %q", got.JumpID)
+	}
+}
+
+func TestOldProfilesWithoutProtocolBecomeSFTP(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "c.json")
+	os.WriteFile(path, []byte(`[{"id":"1","name":"alt","host":"h","port":22,"user":"u","authType":"password"}]`), 0o600)
+	s, err := NewStore(path, memSecrets{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.Get("1"); got.Protocol != ProtoSFTP {
+		t.Fatalf("protocol = %q", got.Protocol)
+	}
+}

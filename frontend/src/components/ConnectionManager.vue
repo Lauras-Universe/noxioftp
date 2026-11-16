@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import {computed, onMounted, reactive, ref} from 'vue'
+import {computed, onMounted, reactive, ref, watch} from 'vue'
 import {App} from '../api'
+import {defaultPort, PROTOCOLS} from '../format'
 import {useConnection} from '../stores/connection'
 import {useUi} from '../stores/ui'
 import type {connections} from '../../wailsjs/go/models'
@@ -10,12 +11,26 @@ const emit = defineEmits<{close: []}>()
 const conn = useConnection()
 const ui = useUi()
 
-const blank = (): connections.Profile => ({id: '', name: '', host: '', port: 22, user: '', authType: 'password', keyPath: '', remoteDir: '', hasSecret: false})
+const blank = (): connections.Profile => ({id: '', name: '', protocol: 'sftp', jumpId: '', host: '', port: 22, user: '', authType: 'password', keyPath: '', remoteDir: '', hasSecret: false})
 const form = reactive<connections.Profile>(blank())
 const secret = ref('')
 const saving = ref(false)
 
 const isNew = computed(() => !form.id)
+const isSftp = computed(() => form.protocol === 'sftp')
+const jumpCandidates = computed(() => conn.profiles.filter((p) => p.protocol === 'sftp' && p.id !== form.id))
+
+// switching protocol: move the port along if it was still the old default, FTP has no key login / jump host
+watch(
+  () => form.protocol,
+  (now, before) => {
+    if (form.port === defaultPort(before)) form.port = defaultPort(now)
+    if (now !== 'sftp') {
+      form.authType = 'password'
+      form.jumpId = ''
+    }
+  },
+)
 
 function select(p: connections.Profile) {
   Object.assign(form, p)
@@ -98,13 +113,20 @@ async function remove() {
         <h2>{{ isNew ? 'Neues Profil' : form.name }}</h2>
 
         <label>Name<input v-model="form.name" placeholder="z. B. Webserver" /></label>
+        <label>
+          Protokoll
+          <select v-model="form.protocol">
+            <option v-for="p in PROTOCOLS" :key="p.value" :value="p.value">{{ p.label }}</option>
+          </select>
+        </label>
+        <p v-if="form.protocol === 'ftp'" class="hint warn">Unverschlüsselt: Passwort und Dateien werden im Klartext übertragen. Nur in vertrauenswürdigen Netzen verwenden.</p>
         <div class="row">
           <label class="grow">Host<input v-model="form.host" required placeholder="example.org" spellcheck="false" /></label>
           <label class="port">Port<input v-model.number="form.port" type="number" min="1" max="65535" /></label>
         </div>
         <label>Benutzer<input v-model="form.user" required autocomplete="off" spellcheck="false" /></label>
 
-        <fieldset>
+        <fieldset v-if="isSftp">
           <legend>Anmeldung</legend>
           <label class="inline"><input v-model="form.authType" type="radio" value="password" /> Passwort</label>
           <label class="inline"><input v-model="form.authType" type="radio" value="key" /> SSH-Schlüssel</label>
@@ -130,6 +152,15 @@ async function remove() {
           </label>
         </template>
         <p class="hint"><Icon name="lock" :size="12" /> Passwörter werden im Schlüsselbund des Betriebssystems gespeichert, nie in einer Datei.</p>
+
+        <label v-if="isSftp">
+          Über Jump-Host verbinden (optional)
+          <select v-model="form.jumpId">
+            <option value="">Direkt verbinden</option>
+            <option v-for="p in jumpCandidates" :key="p.id" :value="p.id">{{ p.name }} ({{ p.user }}@{{ p.host }})</option>
+          </select>
+        </label>
+        <p v-if="isSftp && form.jumpId" class="hint">Das Passwort bzw. die Passphrase des Jump-Hosts muss in dessen Profil gespeichert sein.</p>
 
         <label>Startverzeichnis (optional)<input v-model="form.remoteDir" placeholder="/var/www" spellcheck="false" /></label>
 

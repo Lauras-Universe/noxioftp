@@ -37,6 +37,8 @@ const menu = ref<{x: number; y: number} | null>(null)
 const root = ref<HTMLElement>()
 
 const available = computed(() => !isRemote.value || conn.connected)
+/** Permissions (chmod, mode column) only exist for SFTP. */
+const hasPerms = computed(() => isRemote.value && conn.active?.protocol === 'sftp')
 
 // ------------------------------------------------------------- loading
 
@@ -44,6 +46,7 @@ async function load() {
   const path = panes.req[props.side].path
   if (isRemote.value && (!conn.connected || !path)) {
     listing.value = null
+    panes.entries[props.side] = []
     error.value = ''
     return
   }
@@ -52,6 +55,7 @@ async function load() {
   try {
     const l = isRemote.value ? await App.RemoteList(path) : await App.LocalList(path)
     listing.value = l
+    panes.entries[props.side] = l.entries
     error.value = ''
     panes.cur[props.side] = l.path
     panes.req[props.side].path = l.path
@@ -75,6 +79,7 @@ watch(
   (c) => {
     if (isRemote.value && !c) {
       listing.value = null
+      panes.entries.remote = []
       selected.value = new Set()
     }
   },
@@ -135,6 +140,25 @@ function sortBy(k: typeof sortKey.value) {
 }
 function ariaSort(k: string) {
   return sortKey.value === k ? (sortAsc.value ? 'ascending' : 'descending') : 'none'
+}
+
+// ----------------------------------------------------------- comparison
+
+const TOLERANCE = 2 // seconds: servers round timestamps
+
+/** Colour hint for a row when the directory comparison is on. */
+function cmpClass(r: fsinfo.Entry): string {
+  if (!panes.compare) return ''
+  const otherList = panes.entries[isRemote.value ? 'local' : 'remote']
+  if (!otherList.length && !(isRemote.value ? panes.cur.local : panes.cur.remote)) return ''
+  const o = otherList.find((e) => e.name === r.name)
+  if (!o) return 'cmp-only'
+  if (r.isDir !== o.isDir) return 'cmp-diff'
+  if (r.isDir) return ''
+  if (r.size !== o.size) return 'cmp-diff'
+  if (r.modTime > o.modTime + TOLERANCE) return 'cmp-newer'
+  if (r.modTime + TOLERANCE < o.modTime) return 'cmp-older'
+  return ''
 }
 
 // ------------------------------------------------------------ selection
@@ -203,7 +227,7 @@ function onKey(e: KeyboardEvent) {
 // ----------------------------------------------------------- navigation
 
 function goUp() {
-  if (listing.value && listing.value.parent !== listing.value.path) panes.go(props.side, listing.value.parent)
+  if (listing.value && listing.value.parent !== listing.value.path) panes.navigate(props.side, listing.value.parent)
 }
 async function goHome() {
   if (isRemote.value) {
@@ -220,11 +244,11 @@ function startPathEdit() {
 function commitPathEdit() {
   editingPath.value = false
   const p = pathInput.value.trim()
-  if (p && p !== listing.value?.path) panes.go(props.side, p)
+  if (p && p !== listing.value?.path) panes.navigate(props.side, p)
 }
 
 function openEntry(row: fsinfo.Entry) {
-  if (row.isDir) panes.go(props.side, row.path)
+  if (row.isDir) panes.navigate(props.side, row.path)
   else if (isRemote.value) void editor.open(row.path)
   else if (conn.connected) void transfers.send('upload', [row.path])
   else ui.toast('Nicht verbunden', 'error')
@@ -348,18 +372,39 @@ function onDragStart(e: DragEvent, row: fsinfo.Entry) {
   const paths = selectedEntries.value.map((r) => r.path)
   e.dataTransfer?.setData(MIME, JSON.stringify({side: props.side, paths}))
   e.dataTransfer?.setData('text/plain', paths.join('\n'))
-  if (e.dataTransfer) e.dataTransfer.effectAllowed = 'copy'
+  if (e.dataTransfer) e.dataTransfer.effectAllowed = 'copyMove'
+  panes.dragSide = props.side
 }
-function acceptsDrag(e: DragEvent) {
-  return !!e.dataTransfer?.types.includes(MIME) && available.value
+function onDragEnd() {
+  panes.dragSide = null
+  dragOver.value = null
+}
+/** Dragging inside this pane moves; dragging from the other pane transfers. */
+function acceptsDrag(e: DragEvent, target: string) {
+  if (!e.dataTransfer?.types.includes(MIME) || !available.value) return false
+  if (panes.dragSide === props.side) {
+    // moving: only onto a folder row / path segment that is not itself being dragged
+    return !!target && !selected.value.has(target)
+  }
+  return true
 }
 function onDragOver(e: DragEvent, target: string) {
-  if (!acceptsDrag(e)) return
+  if (!acceptsDrag(e, target)) return
   e.preventDefault()
   e.stopPropagation()
-  if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'
+  if (e.dataTransfer) e.dataTransfer.dropEffect = panes.dragSide === props.side ? 'move' : 'copy'
   dragOver.value = target
 }
+
+async function moveItems(paths: string[], dstDir: string) {
+  await run(async () => {
+    if (isRemote.value) {
+      await App.RemoteMove(paths, dstDir)
+      for (const p of paths) editor.renamed(p, joinPath(dstDir, baseName(p)))
+    } else await App.LocalMove(paths, dstDir)
+  })
+}
+
 function onDrop(e: DragEvent, dstDir: string) {
   dragOver.value = null
   const raw = e.dataTransfer?.getData(MIME)
@@ -367,7 +412,10 @@ function onDrop(e: DragEvent, dstDir: string) {
   e.preventDefault()
   e.stopPropagation()
   const data = JSON.parse(raw) as {side: Side; paths: string[]}
-  if (data.side === props.side) return // moving inside a pane is not supported
+  if (data.side === props.side) {
+    if (dstDir && !data.paths.includes(dstDir)) void moveItems(data.paths, dstDir)
+    return
+  }
   void transfers.send(data.side === 'local' ? 'upload' : 'download', data.paths, dstDir || undefined)
 }
 </script>
@@ -399,7 +447,16 @@ function onDrop(e: DragEvent, dstDir: string) {
     <div v-if="listing" class="pathbar">
       <input v-if="editingPath" ref="pathEl" v-model="pathInput" class="path-input" spellcheck="false" aria-label="Pfad" @keydown.enter="commitPathEdit" @keydown.esc="editingPath = false" @blur="editingPath = false" />
       <nav v-else class="crumbs" aria-label="Pfad" @dblclick.self="startPathEdit">
-        <button v-for="c in listing.crumbs" :key="c.path" class="crumb" @click="panes.go(side, c.path)">{{ c.name }}</button>
+        <button
+          v-for="c in listing.crumbs"
+          :key="c.path"
+          class="crumb"
+          :class="{drop: dragOver === c.path}"
+          @click="panes.navigate(side, c.path)"
+          @dragover="onDragOver($event, c.path)"
+          @dragleave="dragOver = null"
+          @drop="onDrop($event, c.path)"
+        >{{ c.name }}</button>
         <span class="crumb-fill" @click="startPathEdit" />
       </nav>
     </div>
@@ -420,7 +477,7 @@ function onDrop(e: DragEvent, dstDir: string) {
             <th :aria-sort="ariaSort('name')" @click="sortBy('name')">Name</th>
             <th class="num" :aria-sort="ariaSort('size')" @click="sortBy('size')">Größe</th>
             <th :aria-sort="ariaSort('modTime')" @click="sortBy('modTime')">Geändert</th>
-            <th v-if="isRemote" :aria-sort="ariaSort('perm')" @click="sortBy('perm')">Rechte</th>
+            <th v-if="hasPerms" :aria-sort="ariaSort('perm')" @click="sortBy('perm')">Rechte</th>
           </tr>
         </thead>
         <tbody>
@@ -428,7 +485,7 @@ function onDrop(e: DragEvent, dstDir: string) {
             v-for="(r, i) in rows"
             :key="r.path"
             :data-i="i"
-            :class="{selected: selected.has(r.path), 'drop-dir': dragOver === r.path}"
+            :class="[cmpClass(r), {selected: selected.has(r.path), 'drop-dir': dragOver === r.path}]"
             :aria-selected="selected.has(r.path)"
             draggable="true"
             @click="onRowClick($event, r, i)"
@@ -437,6 +494,7 @@ function onDrop(e: DragEvent, dstDir: string) {
             @dragstart="onDragStart($event, r)"
             @dragover="r.isDir ? onDragOver($event, r.path) : undefined"
             @dragleave="dragOver = null"
+            @dragend="onDragEnd"
             @drop="r.isDir ? onDrop($event, r.path) : undefined"
           >
             <td class="name" :title="r.name">
@@ -446,9 +504,9 @@ function onDrop(e: DragEvent, dstDir: string) {
             </td>
             <td class="num">{{ r.isDir ? '' : formatSize(r.size) }}</td>
             <td>{{ formatDate(r.modTime) }}</td>
-            <td v-if="isRemote" class="mono">{{ r.mode }}</td>
+            <td v-if="hasPerms" class="mono">{{ r.mode }}</td>
           </tr>
-          <tr v-if="!rows.length && !loading" class="empty-row"><td :colspan="isRemote ? 4 : 3">Ordner ist leer</td></tr>
+          <tr v-if="!rows.length && !loading" class="empty-row"><td :colspan="hasPerms ? 4 : 3">Ordner ist leer</td></tr>
         </tbody>
       </table>
     </div>
@@ -467,7 +525,7 @@ function onDrop(e: DragEvent, dstDir: string) {
           </li>
           <li class="sep" />
           <li v-if="selectedEntries.length === 1" role="menuitem" @click="doRename(); closeMenu()"><Icon name="pencil" />Umbenennen<kbd>F2</kbd></li>
-          <li v-if="isRemote" role="menuitem" @click="doChmod(); closeMenu()"><Icon name="lock" />Rechte ändern …</li>
+          <li v-if="hasPerms" role="menuitem" @click="doChmod(); closeMenu()"><Icon name="lock" />Rechte ändern …</li>
           <li role="menuitem" @click="copyPath(); closeMenu()"><Icon name="link" />Pfad kopieren</li>
           <li role="menuitem" class="danger" @click="doDelete(); closeMenu()"><Icon name="trash" />Löschen<kbd>Entf</kbd></li>
           <li class="sep" />

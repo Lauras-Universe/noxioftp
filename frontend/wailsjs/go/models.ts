@@ -3,12 +3,14 @@ export namespace connections {
 	export class Profile {
 	    id: string;
 	    name: string;
+	    protocol: string;
 	    host: string;
 	    port: number;
 	    user: string;
 	    authType: string;
 	    keyPath: string;
 	    remoteDir: string;
+	    jumpId: string;
 	    hasSecret: boolean;
 	
 	    static createFrom(source: any = {}) {
@@ -19,12 +21,14 @@ export namespace connections {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
 	        this.name = source["name"];
+	        this.protocol = source["protocol"];
 	        this.host = source["host"];
 	        this.port = source["port"];
 	        this.user = source["user"];
 	        this.authType = source["authType"];
 	        this.keyPath = source["keyPath"];
 	        this.remoteDir = source["remoteDir"];
+	        this.jumpId = source["jumpId"];
 	        this.hasSecret = source["hasSecret"];
 	    }
 	}
@@ -129,7 +133,7 @@ export namespace main {
 
 }
 
-export namespace sftpclient {
+export namespace remote {
 	
 	export class TextFile {
 	    content: string;
@@ -163,6 +167,7 @@ export namespace transfer {
 	    done: number;
 	    total: number;
 	    error: string;
+	    note: string;
 	    policy: string;
 	
 	    static createFrom(source: any = {}) {
@@ -181,8 +186,95 @@ export namespace transfer {
 	        this.done = source["done"];
 	        this.total = source["total"];
 	        this.error = source["error"];
+	        this.note = source["note"];
 	        this.policy = source["policy"];
 	    }
+	}
+	export class SyncAction {
+	    kind: string;
+	    rel: string;
+	    src: string;
+	    dst: string;
+	    size: number;
+	    isDir: boolean;
+	    reason: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SyncAction(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.kind = source["kind"];
+	        this.rel = source["rel"];
+	        this.src = source["src"];
+	        this.dst = source["dst"];
+	        this.size = source["size"];
+	        this.isDir = source["isDir"];
+	        this.reason = source["reason"];
+	    }
+	}
+	export class SyncOptions {
+	    direction: string;
+	    deleteExtra: boolean;
+	    keepNewer: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new SyncOptions(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.direction = source["direction"];
+	        this.deleteExtra = source["deleteExtra"];
+	        this.keepNewer = source["keepNewer"];
+	    }
+	}
+	export class SyncPlan {
+	    id: string;
+	    direction: string;
+	    localDir: string;
+	    remoteDir: string;
+	    actions: SyncAction[];
+	    copyCount: number;
+	    deleteCount: number;
+	    bytes: number;
+	    note: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SyncPlan(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.direction = source["direction"];
+	        this.localDir = source["localDir"];
+	        this.remoteDir = source["remoteDir"];
+	        this.actions = this.convertValues(source["actions"], SyncAction);
+	        this.copyCount = source["copyCount"];
+	        this.deleteCount = source["deleteCount"];
+	        this.bytes = source["bytes"];
+	        this.note = source["note"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 
 }

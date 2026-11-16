@@ -19,6 +19,9 @@ type FS interface {
 	MkdirAll(p string) error
 	ReadDir(p string) ([]fs.FileInfo, error)
 	Remove(p string) error
+	RemoveAll(p string) error
+	// Real resolves symlinks and returns the canonical path.
+	Real(p string) (string, error)
 	Join(elem ...string) string
 	Split(p string) (dir, base string)
 }
@@ -31,6 +34,8 @@ func (LocalFS) Open(p string) (io.ReadCloser, error)    { return os.Open(p) }
 func (LocalFS) Create(p string) (io.WriteCloser, error) { return os.Create(p) }
 func (LocalFS) MkdirAll(p string) error                 { return os.MkdirAll(p, 0o755) }
 func (LocalFS) Remove(p string) error                   { return os.Remove(p) }
+func (LocalFS) RemoveAll(p string) error                { return os.RemoveAll(p) }
+func (LocalFS) Real(p string) (string, error)           { return filepath.EvalSymlinks(p) }
 func (LocalFS) Join(elem ...string) string              { return filepath.Join(elem...) }
 func (LocalFS) Split(p string) (string, string)         { return filepath.Dir(p), filepath.Base(p) }
 func (LocalFS) ReadDir(p string) ([]fs.FileInfo, error) {
@@ -56,5 +61,7 @@ func (r RemoteFS) Create(p string) (io.WriteCloser, error) { return r.C.Create(p
 func (r RemoteFS) MkdirAll(p string) error                 { return r.C.MkdirAll(p) }
 func (r RemoteFS) ReadDir(p string) ([]fs.FileInfo, error) { return r.C.ReadDir(p) }
 func (r RemoteFS) Remove(p string) error                   { return r.C.Remove(p) }
+func (r RemoteFS) RemoveAll(p string) error                { return r.C.RemoveAll(p) }
+func (r RemoteFS) Real(p string) (string, error)           { return r.C.RealPath(p) }
 func (r RemoteFS) Join(elem ...string) string              { return path.Join(elem...) }
 func (r RemoteFS) Split(p string) (string, string)         { return path.Dir(p), path.Base(p) }

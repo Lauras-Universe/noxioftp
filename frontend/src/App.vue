@@ -1,15 +1,18 @@
 <script setup lang="ts">
-import {computed, onBeforeUnmount, onMounted, ref} from 'vue'
+import {computed, onBeforeUnmount, onMounted, ref, watch} from 'vue'
+import {App} from './api'
 import {EventsOn} from '../wailsjs/runtime/runtime'
 import ConnectionManager from './components/ConnectionManager.vue'
 import DialogHost from './components/DialogHost.vue'
 import EditorView from './components/EditorView.vue'
 import FilePane from './components/FilePane.vue'
 import Icon from './components/Icon.vue'
+import SyncDialog from './components/SyncDialog.vue'
 import ToastHost from './components/ToastHost.vue'
 import TransferQueue from './components/TransferQueue.vue'
 import {useConnection} from './stores/connection'
 import {useEditor} from './stores/editor'
+import {usePanes} from './stores/panes'
 import {useTransfers} from './stores/transfers'
 import {useUi} from './stores/ui'
 
@@ -17,10 +20,18 @@ const conn = useConnection()
 const editor = useEditor()
 const transfers = useTransfers()
 const ui = useUi()
+const panes = usePanes()
 
 const showManager = ref(false)
+const showSync = ref(false)
 const selectedId = ref('')
 const offs: Array<() => void> = []
+
+// the backend asks before the window closes while there is unsaved work
+watch(
+  () => editor.tabs.some((t) => t.dirty),
+  (dirty) => void App.SetDirty(dirty),
+)
 
 const status = computed(() => {
   if (conn.busy) return {text: 'Verbinde …', cls: 'busy'}
@@ -74,6 +85,13 @@ function closeManager() {
         <option v-for="p in conn.profiles" :key="p.id" :value="p.id">{{ p.name }} ({{ p.user }}@{{ p.host }})</option>
       </select>
       <button class="primary" :disabled="conn.busy" @click="toggleConnection">{{ conn.connected ? 'Trennen' : 'Verbinden' }}</button>
+      <span class="sep-v" />
+      <label class="check" title="Beim Navigieren in einem Fenster folgt das andere Fenster"><input v-model="panes.syncBrowse" type="checkbox" /> Synchron browsen</label>
+      <button class="toggle" :aria-pressed="panes.compare" title="Unterschiede zwischen den beiden Ordnern farbig markieren" @click="panes.compare = !panes.compare">Vergleichen</button>
+      <span v-if="panes.compare" class="legend">
+        <span class="only"><i />nur hier</span><span class="diff"><i />Größe anders</span><span class="newer"><i />neuer</span><span class="older"><i />älter</span>
+      </span>
+      <button :disabled="!conn.connected" title="Lokalen und Server-Ordner abgleichen" @click="showSync = true">Abgleichen …</button>
       <span class="spacer" />
       <span class="status" :class="status.cls"><i class="dot" />{{ status.text }}</span>
     </header>
@@ -100,6 +118,7 @@ function closeManager() {
     </main>
 
     <ConnectionManager v-if="showManager" @close="closeManager" />
+    <SyncDialog v-if="showSync" @close="showSync = false" />
     <DialogHost />
     <ToastHost />
   </div>

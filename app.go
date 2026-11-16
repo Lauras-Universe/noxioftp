@@ -9,13 +9,16 @@ import (
 	"path"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"sftp-client/internal/connections"
 	"sftp-client/internal/fsinfo"
+	"sftp-client/internal/ftpclient"
 	"sftp-client/internal/localfs"
+	"sftp-client/internal/remote"
 	"sftp-client/internal/sftpclient"
 	"sftp-client/internal/transfer"
 )
@@ -25,12 +28,16 @@ type App struct {
 	ctx      context.Context
 	store    *connections.Store
 	hostKeys *connections.HostKeys
+	certPins *connections.CertPins
 	queue    *transfer.Queue
 
 	mu      sync.Mutex
-	client  *sftpclient.Client
-	cfg     sftpclient.Config // kept for automatic reconnect
+	client  remote.Session
+	redial  func() (remote.Session, error) // reconnects with the same settings
 	profile connections.Profile
+	dirty   bool // unsaved editor tabs
+
+	plans []transfer.SyncPlan // recent sync previews, newest last
 }
 
 // NewApp creates the application.
@@ -64,6 +71,19 @@ func (a *App) startup(ctx context.Context) {
 			Type:          runtime.QuestionDialog,
 			Title:         "Unbekannter Server",
 			Message:       fmt.Sprintf("Die Echtheit von %s kann nicht geprüft werden.\n\n%s-Fingerabdruck:\n%s\n\nDiesem Server vertrauen und die Verbindung fortsetzen?", host, keyType, fingerprint),
+			Buttons:       []string{"Vertrauen", "Abbrechen"},
+			DefaultButton: "Abbrechen",
+			CancelButton:  "Abbrechen",
+		})
+		return err == nil && (res == "Vertrauen" || res == "Yes")
+	}
+
+	a.certPins = connections.NewCertPins(filepath.Join(dir, "known_certs"))
+	a.certPins.Confirm = func(host, fingerprint, verifyErr string) bool {
+		res, err := runtime.MessageDialog(ctx, runtime.MessageDialogOptions{
+			Type:          runtime.QuestionDialog,
+			Title:         "Unbekanntes Zertifikat",
+			Message:       fmt.Sprintf("Das TLS-Zertifikat von %s ist nicht von einer bekannten Stelle beglaubigt:\n%s\n\nSHA-256-Fingerabdruck:\n%s\n\nDiesem Zertifikat vertrauen und fortfahren?", host, verifyErr, fingerprint),
 			Buttons:       []string{"Vertrauen", "Abbrechen"},
 			DefaultButton: "Abbrechen",
 			CancelButton:  "Abbrechen",
@@ -117,6 +137,76 @@ type ConnectResult struct {
 	Home string `json:"home"`
 }
 
+// sftpConfig builds the SSH settings for a profile, including its jump hosts.
+// Secrets of jump hosts must be stored in the keyring (there is no prompt).
+func (a *App) sftpConfig(p connections.Profile, secret string, visited map[string]bool) (sftpclient.Config, error) {
+	if visited[p.ID] {
+		return sftpclient.Config{}, sftpclient.ErrJumpDepth
+	}
+	visited[p.ID] = true
+	cfg := sftpclient.Config{
+		Host:            p.Host,
+		Port:            p.Port,
+		User:            p.User,
+		HostKeyCallback: a.hostKeys.Callback(),
+	}
+	if p.AuthType == connections.AuthKey {
+		cfg.KeyPath, cfg.Passphrase = p.KeyPath, secret
+	} else {
+		cfg.Password = secret
+	}
+	if p.JumpID != "" {
+		jp, ok := a.store.Get(p.JumpID)
+		if !ok {
+			return cfg, errors.New("Jump-Host-Profil nicht gefunden")
+		}
+		jsecret, err := a.store.Secret(jp.ID)
+		if err != nil {
+			return cfg, fmt.Errorf("Schlüsselbund: %w", err)
+		}
+		if jp.AuthType == connections.AuthPassword && jsecret == "" {
+			return cfg, fmt.Errorf("Für den Jump-Host „%s“ muss das Passwort im Profil gespeichert sein", jp.Name)
+		}
+		jc, err := a.sftpConfig(jp, jsecret, visited)
+		if err != nil {
+			return cfg, err
+		}
+		cfg.Jump = &jc
+	}
+	return cfg, nil
+}
+
+// dialer returns a function that opens a session for the profile.
+func (a *App) dialer(p connections.Profile, secret string) (func() (remote.Session, error), error) {
+	if p.Protocol == connections.ProtoSFTP || p.Protocol == "" {
+		cfg, err := a.sftpConfig(p, secret, map[string]bool{})
+		if err != nil {
+			return nil, err
+		}
+		return func() (remote.Session, error) {
+			cl, err := sftpclient.Dial(cfg)
+			if err != nil {
+				return nil, err
+			}
+			return cl, nil
+		}, nil
+	}
+	cfg := ftpclient.Config{Host: p.Host, Port: p.Port, User: p.User, Password: secret, Mode: ftpclient.Plain}
+	switch p.Protocol {
+	case connections.ProtoFTPS:
+		cfg.Mode, cfg.TLS = ftpclient.Explicit, a.certPins.TLSConfig(p.Host)
+	case connections.ProtoFTPSImplicit:
+		cfg.Mode, cfg.TLS = ftpclient.Implicit, a.certPins.TLSConfig(p.Host)
+	}
+	return func() (remote.Session, error) {
+		cl, err := ftpclient.Dial(cfg)
+		if err != nil {
+			return nil, err
+		}
+		return cl, nil
+	}, nil
+}
+
 // Connect opens a connection for a saved profile. secret may be empty to use
 // the one in the keyring.
 func (a *App) Connect(profileID, secret string) (ConnectResult, error) {
@@ -130,32 +220,24 @@ func (a *App) Connect(profileID, secret string) (ConnectResult, error) {
 			return ConnectResult{}, fmt.Errorf("Schlüsselbund: %w", err)
 		}
 	}
-	cfg := sftpclient.Config{
-		Host:            p.Host,
-		Port:            p.Port,
-		User:            p.User,
-		HostKeyCallback: a.hostKeys.Callback(),
+	dial, err := a.dialer(p, secret)
+	if err != nil {
+		return ConnectResult{}, err
 	}
-	if p.AuthType == connections.AuthKey {
-		cfg.KeyPath, cfg.Passphrase = p.KeyPath, secret
-	} else {
-		cfg.Password = secret
-	}
-
-	cl, err := sftpclient.Dial(cfg)
+	cl, err := dial()
 	if err != nil {
 		return ConnectResult{}, err
 	}
 	home := p.RemoteDir
 	if home == "" {
-		if home, err = cl.Home(); err != nil {
+		if home, err = cl.Home(); err != nil || home == "" {
 			home = "/"
 		}
 	}
 
 	a.mu.Lock()
 	old := a.client
-	a.client, a.cfg, a.profile = cl, cfg, p
+	a.client, a.redial, a.profile = cl, dial, p
 	a.mu.Unlock()
 	if old != nil {
 		old.Close()
@@ -164,9 +246,9 @@ func (a *App) Connect(profileID, secret string) (ConnectResult, error) {
 	return ConnectResult{Home: home}, nil
 }
 
-// attach wires a fresh client into the queue and watches for connection loss.
-func (a *App) attach(cl *sftpclient.Client) {
-	a.queue.SetRemote(transfer.RemoteFS{C: cl.SFTP()})
+// attach wires a fresh session into the queue and watches for connection loss.
+func (a *App) attach(cl remote.Session) {
+	a.queue.SetRemote(cl.FS())
 	go func() {
 		<-cl.Done()
 		a.mu.Lock()
@@ -184,7 +266,7 @@ func (a *App) Disconnect() {
 	a.queue.SetRemote(nil)
 	a.mu.Lock()
 	cl := a.client
-	a.client = nil
+	a.client, a.redial = nil, nil
 	a.mu.Unlock()
 	if cl != nil {
 		cl.Close()
@@ -197,8 +279,8 @@ func (a *App) IsConnected() bool {
 	return a.client != nil && !a.client.Closed()
 }
 
-// cli returns the live client, reconnecting once if the connection was lost.
-func (a *App) cli() (*sftpclient.Client, error) {
+// cli returns the live session, reconnecting once if the connection was lost.
+func (a *App) cli() (remote.Session, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.client == nil {
@@ -207,7 +289,7 @@ func (a *App) cli() (*sftpclient.Client, error) {
 	if !a.client.Closed() {
 		return a.client, nil
 	}
-	cl, err := sftpclient.Dial(a.cfg)
+	cl, err := a.redial()
 	if err != nil {
 		return nil, fmt.Errorf("E_NOT_CONNECTED: Verbindung verloren, erneutes Verbinden fehlgeschlagen: %w", err)
 	}
@@ -274,10 +356,10 @@ func (a *App) RemoteChmod(p, octal string) error {
 
 // ----------------------------------------------------------------- editor
 
-func (a *App) RemoteReadText(p string) (sftpclient.TextFile, error) {
+func (a *App) RemoteReadText(p string) (remote.TextFile, error) {
 	cl, err := a.cli()
 	if err != nil {
-		return sftpclient.TextFile{}, err
+		return remote.TextFile{}, err
 	}
 	return cl.ReadText(p)
 }
@@ -299,7 +381,7 @@ func (a *App) fsPair(direction string) (srcName func(string) string, dstFS trans
 		if err != nil {
 			return nil, nil, err
 		}
-		return filepath.Base, transfer.RemoteFS{C: cl.SFTP()}, nil
+		return filepath.Base, cl.FS(), nil
 	case transfer.Download:
 		if _, err := a.cli(); err != nil {
 			return nil, nil, err
@@ -352,3 +434,129 @@ func (a *App) ListTransfers() []transfer.Job { return a.queue.List() }
 func (a *App) CancelTransfer(id string)      { a.queue.Cancel(id) }
 func (a *App) RetryTransfer(id string)       { a.queue.Retry(id) }
 func (a *App) ClearFinishedTransfers()       { a.queue.ClearFinished() }
+
+// ------------------------------------------------------------------ move
+
+func checkMoveTarget(src, dstDir string, sep string) error {
+	if dstDir == src || strings.HasPrefix(dstDir, strings.TrimSuffix(src, sep)+sep) {
+		return errors.New("Ein Ordner kann nicht in sich selbst verschoben werden")
+	}
+	return nil
+}
+
+// LocalMove moves local files/folders into dstDir. Existing targets are never overwritten.
+func (a *App) LocalMove(paths []string, dstDir string) error {
+	for _, src := range paths {
+		to := filepath.Join(dstDir, filepath.Base(src))
+		if filepath.Clean(to) == filepath.Clean(src) {
+			continue
+		}
+		if err := checkMoveTarget(filepath.Clean(src), filepath.Clean(dstDir), string(filepath.Separator)); err != nil {
+			return err
+		}
+		if err := localfs.Rename(src, to); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// RemoteMove moves remote files/folders into dstDir. Existing targets are never overwritten.
+func (a *App) RemoteMove(paths []string, dstDir string) error {
+	cl, err := a.cli()
+	if err != nil {
+		return err
+	}
+	for _, src := range paths {
+		to := path.Join(dstDir, path.Base(src))
+		if path.Clean(to) == path.Clean(src) {
+			continue
+		}
+		if err := checkMoveTarget(path.Clean(src), path.Clean(dstDir), "/"); err != nil {
+			return err
+		}
+		if err := cl.Rename(src, to); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ----------------------------------------------------------------- closing
+
+// SetDirty tells the backend whether the editor has unsaved changes.
+func (a *App) SetDirty(dirty bool) {
+	a.mu.Lock()
+	a.dirty = dirty
+	a.mu.Unlock()
+}
+
+// beforeClose asks for confirmation when closing would lose work.
+// Returning true prevents the window from closing.
+func (a *App) beforeClose(ctx context.Context) bool {
+	a.mu.Lock()
+	dirty := a.dirty
+	a.mu.Unlock()
+	active := a.queue.ActiveCount()
+	if !dirty && active == 0 {
+		return false
+	}
+	var reasons []string
+	if dirty {
+		reasons = append(reasons, "Im Editor gibt es ungespeicherte Änderungen.")
+	}
+	if active > 0 {
+		reasons = append(reasons, fmt.Sprintf("%d Übertragung(en) laufen noch oder warten und würden abgebrochen.", active))
+	}
+	res, err := runtime.MessageDialog(ctx, runtime.MessageDialogOptions{
+		Type:          runtime.QuestionDialog,
+		Title:         "Programm wirklich beenden?",
+		Message:       strings.Join(reasons, "\n"),
+		Buttons:       []string{"Beenden", "Abbrechen"},
+		DefaultButton: "Abbrechen",
+		CancelButton:  "Abbrechen",
+	})
+	return !(err == nil && (res == "Beenden" || res == "Yes"))
+}
+
+// -------------------------------------------------------------------- sync
+
+// PlanSync compares the two directories and returns a preview. Nothing is changed.
+func (a *App) PlanSync(localDir, remoteDir string, opts transfer.SyncOptions) (transfer.SyncPlan, error) {
+	if _, err := a.cli(); err != nil {
+		return transfer.SyncPlan{}, err
+	}
+	plan, err := a.queue.PlanSync(a.ctx, localDir, remoteDir, opts)
+	if err != nil {
+		return plan, err
+	}
+	a.mu.Lock()
+	a.plans = append(a.plans, plan)
+	if len(a.plans) > 5 {
+		a.plans = a.plans[1:]
+	}
+	a.mu.Unlock()
+	return plan, nil
+}
+
+// RunSync executes a previously previewed plan and returns the number of queued transfers.
+func (a *App) RunSync(planID string) (int, error) {
+	if _, err := a.cli(); err != nil {
+		return 0, err
+	}
+	a.mu.Lock()
+	var plan *transfer.SyncPlan
+	for i := range a.plans {
+		if a.plans[i].ID == planID {
+			p := a.plans[i]
+			plan = &p
+			a.plans = append(a.plans[:i], a.plans[i+1:]...)
+			break
+		}
+	}
+	a.mu.Unlock()
+	if plan == nil {
+		return 0, errors.New("Die Vorschau ist abgelaufen, bitte erneut vergleichen")
+	}
+	return a.queue.ApplySync(*plan)
+}

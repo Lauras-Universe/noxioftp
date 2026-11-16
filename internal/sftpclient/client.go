@@ -2,7 +2,6 @@
 package sftpclient
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -12,25 +11,27 @@ import (
 	"strconv"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 
 	"sftp-client/internal/fsinfo"
+	"sftp-client/internal/remote"
+	"sftp-client/internal/transfer"
 )
 
-// Error codes. The frontend matches on the prefix before the colon.
+// Error codes (shared with the other protocols, see package remote).
 var (
 	ErrPassphrase  = errors.New("E_PASSPHRASE: Der private Schlüssel ist durch eine Passphrase geschützt")
-	ErrModified    = errors.New("E_MODIFIED: Die Datei wurde auf dem Server inzwischen geändert")
-	ErrBinary      = errors.New("E_BINARY: Die Datei ist keine UTF-8-Textdatei und kann nicht bearbeitet werden")
-	ErrTooLarge    = errors.New("E_TOO_LARGE: Die Datei ist zu groß für den Editor")
+	ErrModified    = remote.ErrModified
+	ErrBinary      = remote.ErrBinary
+	ErrTooLarge    = remote.ErrTooLarge
 	ErrNoHostCheck = errors.New("kein Host-Key-Callback konfiguriert")
+	ErrJumpDepth   = errors.New("Jump-Host-Kette ist zu lang oder enthält eine Schleife")
 )
 
 // MaxEditSize is the largest file the editor will open.
-const MaxEditSize = 5 << 20
+const MaxEditSize = remote.MaxEditSize
 
 // Config describes how to connect.
 type Config struct {
@@ -42,14 +43,19 @@ type Config struct {
 	Passphrase      string // optional, for encrypted keys
 	HostKeyCallback ssh.HostKeyCallback
 	Timeout         time.Duration
+	// Jump, if set, is a host to tunnel through (like OpenSSH's ProxyJump).
+	Jump *Config
 }
+
+var _ remote.Session = (*Client)(nil)
 
 // Client is an open SFTP connection.
 type Client struct {
-	ssh  *ssh.Client
-	sftp *sftp.Client
-	done chan struct{}
-	once sync.Once
+	ssh   *ssh.Client
+	jumps []*ssh.Client // tunnel hosts, closed together with the connection
+	sftp  *sftp.Client
+	done  chan struct{}
+	once  sync.Once
 }
 
 func authMethods(cfg Config) ([]ssh.AuthMethod, error) {
@@ -85,14 +91,21 @@ func authMethods(cfg Config) ([]ssh.AuthMethod, error) {
 	return []ssh.AuthMethod{ssh.PublicKeys(signer)}, nil
 }
 
-// Dial connects and opens the SFTP subsystem.
-func Dial(cfg Config) (*Client, error) {
+// maxJumps bounds the length of a ProxyJump chain.
+const maxJumps = 4
+
+// dialSSH opens the SSH connection (through the jump hosts, if any) and
+// returns it together with the jump clients that must be closed with it.
+func dialSSH(cfg Config, depth int) (*ssh.Client, []*ssh.Client, error) {
+	if depth > maxJumps {
+		return nil, nil, ErrJumpDepth
+	}
 	if cfg.HostKeyCallback == nil {
-		return nil, ErrNoHostCheck
+		return nil, nil, ErrNoHostCheck
 	}
 	auth, err := authMethods(cfg)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if cfg.Timeout == 0 {
 		cfg.Timeout = 15 * time.Second
@@ -101,21 +114,62 @@ func Dial(cfg Config) (*Client, error) {
 	if port == 0 {
 		port = 22
 	}
-	conn, err := ssh.Dial("tcp", net.JoinHostPort(cfg.Host, strconv.Itoa(port)), &ssh.ClientConfig{
+	addr := net.JoinHostPort(cfg.Host, strconv.Itoa(port))
+	sshCfg := &ssh.ClientConfig{
 		User:            cfg.User,
 		Auth:            auth,
 		HostKeyCallback: cfg.HostKeyCallback,
 		Timeout:         cfg.Timeout,
-	})
+	}
+	if cfg.Jump == nil {
+		c, err := ssh.Dial("tcp", addr, sshCfg)
+		return c, nil, err
+	}
+
+	jc, chain, err := dialSSH(*cfg.Jump, depth+1)
+	if err != nil {
+		return nil, nil, fmt.Errorf("Jump-Host %s: %w", cfg.Jump.Host, err)
+	}
+	chain = append(chain, jc)
+	closeAll := func() {
+		for _, j := range chain {
+			j.Close()
+		}
+	}
+	nc, err := jc.Dial("tcp", addr)
+	if err != nil {
+		closeAll()
+		return nil, nil, fmt.Errorf("Verbindung über Jump-Host zu %s: %w", addr, err)
+	}
+	// channel connections have no deadlines: guard the handshake with a timer
+	timer := time.AfterFunc(cfg.Timeout, func() { nc.Close() })
+	conn, chans, reqs, err := ssh.NewClientConn(nc, addr, sshCfg)
+	if !timer.Stop() && err == nil {
+		err = errors.New("Zeitüberschreitung beim SSH-Handshake")
+	}
+	if err != nil {
+		nc.Close()
+		closeAll()
+		return nil, nil, err
+	}
+	return ssh.NewClient(conn, chans, reqs), chain, nil
+}
+
+// Dial connects (optionally through jump hosts) and opens the SFTP subsystem.
+func Dial(cfg Config) (*Client, error) {
+	conn, jumps, err := dialSSH(cfg, 0)
 	if err != nil {
 		return nil, err
 	}
 	sc, err := sftp.NewClient(conn)
 	if err != nil {
 		conn.Close()
+		for _, j := range jumps {
+			j.Close()
+		}
 		return nil, err
 	}
-	c := &Client{ssh: conn, sftp: sc, done: make(chan struct{})}
+	c := &Client{ssh: conn, jumps: jumps, sftp: sc, done: make(chan struct{})}
 	go func() {
 		_ = sc.Wait()
 		c.markClosed()
@@ -171,11 +225,17 @@ func (c *Client) Close() {
 	if c.ssh != nil {
 		c.ssh.Close()
 	}
+	for _, j := range c.jumps {
+		j.Close()
+	}
 	c.markClosed()
 }
 
-// SFTP exposes the underlying client for transfers.
+// SFTP exposes the underlying client.
 func (c *Client) SFTP() *sftp.Client { return c.sftp }
+
+// FS returns the file system view used by the transfer queue.
+func (c *Client) FS() transfer.FS { return transfer.RemoteFS{C: c.sftp} }
 
 // Home returns the initial (home) directory of the session.
 func (c *Client) Home() (string, error) { return c.sftp.Getwd() }
@@ -248,11 +308,7 @@ func (c *Client) Chmod(p string, mode uint32) error {
 }
 
 // TextFile is the content of a file opened in the editor.
-type TextFile struct {
-	Content string `json:"content"`
-	ModTime int64  `json:"modTime"`
-	Size    int64  `json:"size"`
-}
+type TextFile = remote.TextFile
 
 // ReadText reads a remote file for the editor.
 func (c *Client) ReadText(p string) (TextFile, error) {
@@ -272,11 +328,8 @@ func (c *Client) ReadText(p string) (TextFile, error) {
 	if err != nil {
 		return TextFile{}, err
 	}
-	if len(data) > MaxEditSize {
-		return TextFile{}, ErrTooLarge
-	}
-	if bytes.IndexByte(data, 0) >= 0 || !utf8.Valid(data) {
-		return TextFile{}, ErrBinary
+	if err := remote.CheckText(data); err != nil {
+		return TextFile{}, err
 	}
 	return TextFile{Content: string(data), ModTime: fi.ModTime().Unix(), Size: fi.Size()}, nil
 }

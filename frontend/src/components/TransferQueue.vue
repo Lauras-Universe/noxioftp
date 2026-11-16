@@ -45,6 +45,7 @@ function percent(done: number, total: number) {
             <Icon :name="j.isDir ? 'folder' : 'file'" :size="13" /> {{ j.name }}
           </div>
           <div v-if="j.status === 'failed'" class="err">{{ j.error }}</div>
+          <div v-else-if="j.note && j.status !== 'running'" class="muted note">{{ j.note }}</div>
           <div v-else class="bar" :class="{indeterminate: j.status === 'running' && !j.total}">
             <div :style="{width: (j.status === 'done' ? 100 : percent(j.done, j.total)) + '%'}" />
           </div>

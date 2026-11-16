@@ -4,7 +4,7 @@ import {main} from '../models';
 import {connections} from '../models';
 import {transfer} from '../models';
 import {fsinfo} from '../models';
-import {sftpclient} from '../models';
+import {remote} from '../models';
 
 export function CancelTransfer(arg1:string):Promise<void>;
 
@@ -34,11 +34,15 @@ export function LocalList(arg1:string):Promise<fsinfo.Listing>;
 
 export function LocalMkdir(arg1:string):Promise<void>;
 
+export function LocalMove(arg1:Array<string>,arg2:string):Promise<void>;
+
 export function LocalRename(arg1:string,arg2:string):Promise<void>;
 
 export function LocalRoots():Promise<Array<string>>;
 
 export function PickKeyFile():Promise<string>;
+
+export function PlanSync(arg1:string,arg2:string,arg3:transfer.SyncOptions):Promise<transfer.SyncPlan>;
 
 export function RemoteChmod(arg1:string,arg2:string):Promise<void>;
 
@@ -48,7 +52,9 @@ export function RemoteList(arg1:string):Promise<fsinfo.Listing>;
 
 export function RemoteMkdir(arg1:string):Promise<void>;
 
-export function RemoteReadText(arg1:string):Promise<sftpclient.TextFile>;
+export function RemoteMove(arg1:Array<string>,arg2:string):Promise<void>;
+
+export function RemoteReadText(arg1:string):Promise<remote.TextFile>;
 
 export function RemoteRename(arg1:string,arg2:string):Promise<void>;
 
@@ -56,4 +62,8 @@ export function RemoteWriteText(arg1:string,arg2:string,arg3:number,arg4:boolean
 
 export function RetryTransfer(arg1:string):Promise<void>;
 
+export function RunSync(arg1:string):Promise<number>;
+
 export function SaveProfile(arg1:connections.Profile,arg2:string):Promise<connections.Profile>;
+
+export function SetDirty(arg1:boolean):Promise<void>;

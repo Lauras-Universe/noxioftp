@@ -24,17 +24,27 @@ const (
 	AuthKey      = "key"
 )
 
+// Protocols.
+const (
+	ProtoSFTP         = "sftp"
+	ProtoFTP          = "ftp"           // plain, unencrypted
+	ProtoFTPS         = "ftps"          // explicit TLS (AUTH TLS)
+	ProtoFTPSImplicit = "ftps-implicit" // implicit TLS
+)
+
 // Profile is a saved server. Secrets (password / key passphrase) are never
 // stored here but in the OS keyring.
 type Profile struct {
 	ID        string `json:"id"`
 	Name      string `json:"name"`
+	Protocol  string `json:"protocol"` // see Proto*, empty = sftp
 	Host      string `json:"host"`
 	Port      int    `json:"port"`
 	User      string `json:"user"`
 	AuthType  string `json:"authType"`
 	KeyPath   string `json:"keyPath"`
 	RemoteDir string `json:"remoteDir"` // optional start directory
+	JumpID    string `json:"jumpId"`    // optional SFTP profile to tunnel through (SFTP only)
 	HasSecret bool   `json:"hasSecret"`
 }
 
@@ -77,6 +87,11 @@ func NewStore(path string, secrets Secrets) (*Store, error) {
 	default:
 		if err := json.Unmarshal(data, &s.profiles); err != nil {
 			return nil, fmt.Errorf("%s ist beschädigt: %w", path, err)
+		}
+		for i := range s.profiles { // profiles from before FTP support
+			if s.profiles[i].Protocol == "" {
+				s.profiles[i].Protocol = ProtoSFTP
+			}
 		}
 	}
 	return s, nil
@@ -123,14 +138,36 @@ func validate(p *Profile) error {
 	if p.Host == "" || p.User == "" {
 		return errors.New("Host und Benutzer sind erforderlich")
 	}
+	switch p.Protocol {
+	case "", ProtoSFTP:
+		p.Protocol = ProtoSFTP
+	case ProtoFTP, ProtoFTPS, ProtoFTPSImplicit:
+	default:
+		return errors.New("Ungültiges Protokoll")
+	}
 	if p.Port == 0 {
-		p.Port = 22
+		switch p.Protocol {
+		case ProtoSFTP:
+			p.Port = 22
+		case ProtoFTPSImplicit:
+			p.Port = 990
+		default:
+			p.Port = 21
+		}
 	}
 	if p.Port < 1 || p.Port > 65535 {
 		return errors.New("Ungültiger Port")
 	}
 	if p.AuthType != AuthPassword && p.AuthType != AuthKey {
 		return errors.New("Ungültige Anmeldeart")
+	}
+	if p.Protocol != ProtoSFTP {
+		if p.AuthType != AuthPassword {
+			return errors.New("FTP unterstützt nur die Anmeldung per Passwort")
+		}
+		if p.JumpID != "" {
+			return errors.New("Jump-Hosts gibt es nur bei SFTP")
+		}
 	}
 	if p.AuthType == AuthKey && p.KeyPath == "" {
 		return errors.New("Für die Schlüssel-Anmeldung wird eine Schlüsseldatei benötigt")
@@ -160,6 +197,20 @@ func (s *Store) Save(p Profile, secret string) (Profile, error) {
 	for i, e := range s.profiles {
 		if e.ID == p.ID {
 			idx = i
+		}
+	}
+	if p.JumpID != "" {
+		if p.JumpID == p.ID {
+			return Profile{}, errors.New("Ein Profil kann nicht sein eigener Jump-Host sein")
+		}
+		found := false
+		for _, e := range s.profiles {
+			if e.ID == p.JumpID && e.Protocol == ProtoSFTP {
+				found = true
+			}
+		}
+		if !found {
+			return Profile{}, errors.New("Der Jump-Host muss ein gespeichertes SFTP-Profil sein")
 		}
 	}
 	if idx >= 0 {
@@ -194,6 +245,11 @@ func (s *Store) Delete(id string) error {
 				}
 			}
 			s.profiles = append(s.profiles[:i], s.profiles[i+1:]...)
+			for j := range s.profiles { // profiles that tunnelled through it no longer do
+				if s.profiles[j].JumpID == id {
+					s.profiles[j].JumpID = ""
+				}
+			}
 			return s.persist()
 		}
 	}

@@ -53,6 +53,7 @@ type Job struct {
 	Done      int64     `json:"done"`
 	Total     int64     `json:"total"`
 	Error     string    `json:"error"`
+	Note      string    `json:"note"` // e.g. skipped links
 	Policy    Policy    `json:"policy"`
 }
 
@@ -148,6 +149,19 @@ func (q *Queue) Cancel(id string) {
 	if snap != nil {
 		q.emit(*snap, true)
 	}
+}
+
+// ActiveCount returns the number of queued and running jobs.
+func (q *Queue) ActiveCount() int {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	n := 0
+	for _, j := range q.jobs {
+		if j.Status == Queued || j.Status == Running {
+			n++
+		}
+	}
+	return n
 }
 
 // CancelAll cancels everything that has not finished.
@@ -279,6 +293,7 @@ func (q *Queue) addBytes(j *Job, n int64) {
 type entry struct {
 	rel  string // path relative to the job root, "" for a single file
 	size int64
+	mod  time.Time
 	dir  bool
 }
 
@@ -306,6 +321,11 @@ func (q *Queue) execute(ctx context.Context, j *Job, local, remote FS) error {
 		if err != nil {
 			return err
 		}
+		if d, _ := dstFS.Split(dst); d != "" {
+			if err := dstFS.MkdirAll(d); err != nil {
+				return err
+			}
+		}
 		return q.copyFile(ctx, j, srcFS, dstFS, j.Src, dst)
 	}
 
@@ -313,8 +333,8 @@ func (q *Queue) execute(ctx context.Context, j *Job, local, remote FS) error {
 	q.mu.Lock()
 	j.IsDir = true
 	q.mu.Unlock()
-	var items []entry
-	if err := walk(ctx, srcFS, j.Src, "", &items); err != nil {
+	items, skippedLinks, err := walkTree(ctx, srcFS, j.Src)
+	if err != nil {
 		return err
 	}
 	var total int64
@@ -323,6 +343,9 @@ func (q *Queue) execute(ctx context.Context, j *Job, local, remote FS) error {
 	}
 	q.mu.Lock()
 	j.Total = total
+	if skippedLinks > 0 {
+		j.Note = fmt.Sprintf("%d Verknüpfung(en) übersprungen (defekt oder Schleife)", skippedLinks)
+	}
 	q.mu.Unlock()
 
 	root := j.Dst
@@ -368,27 +391,75 @@ func (q *Queue) execute(ctx context.Context, j *Job, local, remote FS) error {
 	return nil
 }
 
-// walk lists a directory tree. Symlinks are skipped to avoid loops.
-func walk(ctx context.Context, f FS, root, rel string, out *[]entry) error {
+// walkTree lists a directory tree below root. Symlinks are followed; broken
+// links and links that point back to a directory currently being walked
+// (loops) are skipped and counted.
+func walkTree(ctx context.Context, f FS, root string) (items []entry, skipped int, err error) {
+	real, err := f.Real(root)
+	if err != nil {
+		real = root
+	}
+	w := &walker{f: f, root: root}
+	err = w.walk(ctx, "", real, map[string]bool{real: true}, 0)
+	return w.items, w.skipped, err
+}
+
+type walker struct {
+	f       FS
+	root    string
+	items   []entry
+	skipped int
+}
+
+// walk lists root/rel. real is the canonical path of that directory and chain
+// the canonical paths of all directories on the way down (for loop detection).
+// maxDepth guards against loops that cannot be detected by canonical path
+// (e.g. FTP servers, which do not resolve symlinks).
+const maxDepth = 64
+
+func (w *walker) walk(ctx context.Context, rel, real string, chain map[string]bool, depth int) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	infos, err := f.ReadDir(f.Join(root, rel))
+	if depth > maxDepth {
+		w.skipped++
+		return nil
+	}
+	infos, err := w.f.ReadDir(w.f.Join(w.root, rel))
 	if err != nil {
 		return err
 	}
 	for _, fi := range infos {
+		r := w.f.Join(rel, fi.Name())
+		childReal := w.f.Join(real, fi.Name())
+		info := fi
 		if fi.Mode()&fs.ModeSymlink != 0 {
-			continue
+			st, err := w.f.Stat(w.f.Join(w.root, r)) // follows the link
+			if err != nil {
+				w.skipped++ // broken link
+				continue
+			}
+			info = st
+			if st.IsDir() {
+				if childReal, err = w.f.Real(w.f.Join(w.root, r)); err != nil || chain[childReal] {
+					w.skipped++ // loop (or unresolvable)
+					continue
+				}
+			}
 		}
-		r := f.Join(rel, fi.Name())
-		if fi.IsDir() {
-			*out = append(*out, entry{rel: r, dir: true})
-			if err := walk(ctx, f, root, r, out); err != nil {
+		switch {
+		case info.IsDir():
+			w.items = append(w.items, entry{rel: r, dir: true, mod: info.ModTime()})
+			chain[childReal] = true
+			err := w.walk(ctx, r, childReal, chain, depth+1)
+			delete(chain, childReal)
+			if err != nil {
 				return err
 			}
-		} else if fi.Mode().IsRegular() {
-			*out = append(*out, entry{rel: r, size: fi.Size()})
+		case info.Mode().IsRegular():
+			w.items = append(w.items, entry{rel: r, size: info.Size(), mod: info.ModTime()})
+		default:
+			w.skipped++ // sockets, devices, ...
 		}
 	}
 	return nil

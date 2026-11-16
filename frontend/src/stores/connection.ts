@@ -23,6 +23,10 @@ export const useConnection = defineStore('connection', () => {
   async function connect(id: string) {
     const p = profiles.value.find((x) => x.id === id)
     if (!p || busy.value) return
+    if (p.protocol === 'ftp') {
+      const ok = await ui.confirm('Unverschlüsselte Verbindung', `FTP überträgt Benutzername, Passwort und alle Dateien unverschlüsselt. Trotzdem mit ${p.host} verbinden?`, {okLabel: 'Trotzdem verbinden', danger: true})
+      if (!ok) return
+    }
     let secret = ''
     if (p.authType === 'password' && !p.hasSecret) {
       const pw = await ui.prompt(`Passwort für ${p.user}@${p.host}`, '', {secret: true, okLabel: 'Verbinden'})
