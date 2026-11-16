@@ -56,3 +56,4 @@ tools/testsftpd          lokaler Test-Server
 - Kein FTP/FTPS, keine Synchronisierung, kein Jump-Host
 - Windows-/Linux-Builds am besten über CI (Linux braucht `libgtk-3-dev` und `libwebkit2gtk-4.1-dev`)
 # own-sftp-tool
+# own-sftp-tool
