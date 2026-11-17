@@ -16,6 +16,8 @@ import (
 	"github.com/zalando/go-keyring"
 )
 
+// keyringService is a stable identifier of the entries in the OS keyring. It keeps
+// its original value on purpose: changing it would orphan the saved passwords.
 const keyringService = "sftp-client"
 
 // Auth types.

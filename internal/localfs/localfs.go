@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 
-	"sftp-client/internal/fsinfo"
+	"noxioftp/internal/fsinfo"
 )
 
 // Home returns the user's home directory.

@@ -14,13 +14,15 @@ import (
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
-	"sftp-client/internal/connections"
-	"sftp-client/internal/fsinfo"
-	"sftp-client/internal/ftpclient"
-	"sftp-client/internal/localfs"
-	"sftp-client/internal/remote"
-	"sftp-client/internal/sftpclient"
-	"sftp-client/internal/transfer"
+	"noxioftp/internal/appinfo"
+	"noxioftp/internal/connections"
+	"noxioftp/internal/fsinfo"
+	"noxioftp/internal/ftpclient"
+	"noxioftp/internal/localfs"
+	"noxioftp/internal/remote"
+	"noxioftp/internal/sftpclient"
+	"noxioftp/internal/transfer"
+	"noxioftp/internal/update"
 )
 
 // App is bound to the frontend: every exported method is callable from JS.
@@ -37,7 +39,8 @@ type App struct {
 	profile connections.Profile
 	dirty   bool // unsaved editor tabs
 
-	plans []transfer.SyncPlan // recent sync previews, newest last
+	plans   []transfer.SyncPlan // recent sync previews, newest last
+	pending *update.Release     // release found by the last update check
 }
 
 // NewApp creates the application.
@@ -45,15 +48,15 @@ func NewApp() *App { return &App{} }
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+	if api := os.Getenv("NOXIOFTP_UPDATE_API"); api != "" { // for testing the update flow
+		update.APIBase = api
+	}
+	go update.CleanupOld() // leftover of the previous update (Windows)
 
-	// SFTP_CLIENT_CONFIG_DIR overrides the config location (portable use, tests).
-	dir := os.Getenv("SFTP_CLIENT_CONFIG_DIR")
+	appinfo.MigrateLegacyConfig() // settings of the first, unnamed versions
+	dir := appinfo.ConfigDir()
 	if dir == "" {
-		base, err := os.UserConfigDir()
-		if err != nil {
-			base = "."
-		}
-		dir = filepath.Join(base, "sftp-client")
+		dir = "."
 	}
 	var err error
 
@@ -62,7 +65,7 @@ func (a *App) startup(ctx context.Context) {
 		runtime.MessageDialog(ctx, runtime.MessageDialogOptions{
 			Type: runtime.ErrorDialog, Title: "Fehler", Message: err.Error(),
 		})
-		a.store, _ = connections.NewStore(filepath.Join(os.TempDir(), "sftp-client-connections.json"), connections.KeyringSecrets{})
+		a.store, _ = connections.NewStore(filepath.Join(os.TempDir(), "noxioftp-connections.json"), connections.KeyringSecrets{})
 	}
 
 	a.hostKeys = connections.NewHostKeys(filepath.Join(dir, "known_hosts"))

@@ -15,9 +15,9 @@ import (
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 
-	"sftp-client/internal/fsinfo"
-	"sftp-client/internal/remote"
-	"sftp-client/internal/transfer"
+	"noxioftp/internal/fsinfo"
+	"noxioftp/internal/remote"
+	"noxioftp/internal/transfer"
 )
 
 // Error codes (shared with the other protocols, see package remote).

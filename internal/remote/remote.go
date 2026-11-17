@@ -7,8 +7,8 @@ import (
 	"errors"
 	"unicode/utf8"
 
-	"sftp-client/internal/fsinfo"
-	"sftp-client/internal/transfer"
+	"noxioftp/internal/fsinfo"
+	"noxioftp/internal/transfer"
 )
 
 // Error codes. The frontend matches on the prefix before the colon.

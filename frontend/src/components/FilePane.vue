@@ -516,6 +516,10 @@ function onDrop(e: DragEvent, dstDir: string) {
 
     <footer class="pane-foot muted">
       <template v-if="listing">{{ rows.length }} Einträge<template v-if="selected.size"> · {{ selected.size }} ausgewählt</template></template>
+      <span class="spacer" />
+      <span v-if="panes.compare" class="legend" title="Farbmarkierung des Vergleichs">
+        <span class="only"><i />nur hier</span><span class="diff"><i />Größe anders</span><span class="newer"><i />neuer</span><span class="older"><i />älter</span>
+      </span>
     </footer>
 
     <Teleport to="body">

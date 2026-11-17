@@ -20,9 +20,9 @@ import (
 
 	"github.com/jlaffaye/ftp"
 
-	"sftp-client/internal/fsinfo"
-	"sftp-client/internal/remote"
-	"sftp-client/internal/transfer"
+	"noxioftp/internal/fsinfo"
+	"noxioftp/internal/remote"
+	"noxioftp/internal/transfer"
 )
 
 // Mode selects the transport security.

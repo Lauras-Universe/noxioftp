@@ -279,3 +279,34 @@ export namespace transfer {
 
 }
 
+export namespace update {
+	
+	export class Info {
+	    available: boolean;
+	    current: string;
+	    latest: string;
+	    notes: string;
+	    pageUrl: string;
+	    method: string;
+	    command: string;
+	    reason: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new Info(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.available = source["available"];
+	        this.current = source["current"];
+	        this.latest = source["latest"];
+	        this.notes = source["notes"];
+	        this.pageUrl = source["pageUrl"];
+	        this.method = source["method"];
+	        this.command = source["command"];
+	        this.reason = source["reason"];
+	    }
+	}
+
+}
+

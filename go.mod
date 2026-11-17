@@ -1,4 +1,4 @@
-module sftp-client
+module noxioftp
 
 go 1.26.0
 

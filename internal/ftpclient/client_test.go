@@ -20,9 +20,9 @@ import (
 	ftpserver "github.com/fclairamb/ftpserverlib"
 	"github.com/spf13/afero"
 
-	"sftp-client/internal/connections"
-	"sftp-client/internal/remote"
-	"sftp-client/internal/transfer"
+	"noxioftp/internal/connections"
+	"noxioftp/internal/remote"
+	"noxioftp/internal/transfer"
 )
 
 type driver struct {
