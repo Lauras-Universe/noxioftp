@@ -57,7 +57,7 @@ tools/testsftpd, testftpd lokale Test-Server
 
 ## Bekannte Grenzen
 
-- Zugriffsrechte (chmod, Rechte-Spalte) gibt es nur bei SFTP
+- Zugriffsrechte ändern geht bei SFTP und bei FTP/FTPS (per `SITE CHMOD`, der Server muss das erlauben). Die Rechte-Spalte füllt sich bei FTP aus der `LIST`-Ausgabe im Unix-Format; Server mit DOS/IIS-Listings liefern keine Rechte, dann bleibt die Spalte aus. Dafür wird jedes Verzeichnis bei FTP ein zweites Mal gelistet
 - Bei FTP lassen sich Symlinks nicht auf Schleifen prüfen; die Ordnertiefe ist deshalb auf 64 begrenzt
 - Der Abgleich ist einseitig (Quelle → Ziel), kein Zwei-Wege-Merge
 - Windows-/Linux-Builds am besten über CI (Linux braucht `libgtk-3-dev` und `libwebkit2gtk-4.1-dev`)

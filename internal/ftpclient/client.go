@@ -299,9 +299,13 @@ func stat(conn *ftp.ServerConn, p string) (info, error) {
 func (c *Client) List(dir string) (fsinfo.Listing, error) {
 	dir = path.Clean(dir)
 	var infos []info
+	var modes map[string]modeInfo
 	err := c.with(func(conn *ftp.ServerConn) (err error) {
-		infos, err = listInfos(conn, dir)
-		return
+		if infos, err = listInfos(conn, dir); err != nil {
+			return err
+		}
+		modes = c.modes(conn, dir) // permissions: best effort, see listmode.go
+		return nil
 	})
 	if err != nil {
 		return fsinfo.Listing{}, err
@@ -309,7 +313,10 @@ func (c *Client) List(dir string) (fsinfo.Listing, error) {
 	entries := make([]fsinfo.Entry, 0, len(infos))
 	for _, i := range infos {
 		e := fsinfo.FromInfo(path.Join(dir, i.name), i)
-		e.Mode, e.Perm = "", 0 // FTP listings carry no portable permission bits
+		e.Mode, e.Perm = "", 0 // unknown unless the server's LIST output told us
+		if m, ok := modes[i.name]; ok {
+			e.Mode, e.Perm = m.mode, m.perm
+		}
 		entries = append(entries, e)
 	}
 	fsinfo.Sort(entries)
@@ -359,8 +366,6 @@ func removeAll(conn *ftp.ServerConn, p string) error {
 	}
 	return conn.Delete(p)
 }
-
-func (c *Client) Chmod(string, uint32) error { return remote.ErrNoChmod }
 
 func (c *Client) ReadText(p string) (remote.TextFile, error) {
 	var out remote.TextFile

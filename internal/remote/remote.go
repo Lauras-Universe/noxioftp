@@ -16,7 +16,6 @@ var (
 	ErrModified = errors.New("E_MODIFIED: Die Datei wurde auf dem Server inzwischen geändert")
 	ErrBinary   = errors.New("E_BINARY: Die Datei ist keine UTF-8-Textdatei und kann nicht bearbeitet werden")
 	ErrTooLarge = errors.New("E_TOO_LARGE: Die Datei ist zu groß für den Editor")
-	ErrNoChmod  = errors.New("Zugriffsrechte ändern wird bei diesem Protokoll nicht unterstützt")
 )
 
 // MaxEditSize is the largest file the editor will open.

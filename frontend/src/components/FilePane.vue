@@ -37,8 +37,10 @@ const menu = ref<{x: number; y: number} | null>(null)
 const root = ref<HTMLElement>()
 
 const available = computed(() => !isRemote.value || conn.connected)
-/** Permissions (chmod, mode column) only exist for SFTP. */
-const hasPerms = computed(() => isRemote.value && conn.active?.protocol === 'sftp')
+/** Show the mode column on SFTP, and on FTP when the server's listing contained permissions (not the case for DOS/IIS style servers). */
+const hasPerms = computed(() => isRemote.value && (conn.active?.protocol === 'sftp' || (listing.value?.entries ?? []).some((e) => e.mode)))
+/** chmod works on every remote protocol (FTP via SITE CHMOD, if the server allows it). */
+const canChmod = computed(() => isRemote.value)
 
 // ------------------------------------------------------------- loading
 
@@ -321,8 +323,9 @@ async function doDelete() {
 async function doChmod() {
   const items = selectedEntries.value
   if (!items.length) return
-  const v = await ui.prompt('Zugriffsrechte (oktal)', octal(items[0].perm), {
-    message: 'Z. B. 644 für Dateien, 755 für Ordner und Skripte.',
+  const known = !!items[0].mode // some FTP servers do not list permissions
+  const v = await ui.prompt('Zugriffsrechte (oktal)', known ? octal(items[0].perm) : '644', {
+    message: 'Z. B. 644 für Dateien, 755 für Ordner und Skripte.' + (conn.active?.protocol === 'sftp' ? '' : '\nBei FTP muss der Server SITE CHMOD unterstützen.'),
   })
   if (v === null) return
   await run(async () => {
@@ -525,7 +528,7 @@ function onDrop(e: DragEvent, dstDir: string) {
           </li>
           <li class="sep" />
           <li v-if="selectedEntries.length === 1" role="menuitem" @click="doRename(); closeMenu()"><Icon name="pencil" />Umbenennen<kbd>F2</kbd></li>
-          <li v-if="hasPerms" role="menuitem" @click="doChmod(); closeMenu()"><Icon name="lock" />Rechte ändern …</li>
+          <li v-if="canChmod" role="menuitem" @click="doChmod(); closeMenu()"><Icon name="lock" />Rechte ändern …</li>
           <li role="menuitem" @click="copyPath(); closeMenu()"><Icon name="link" />Pfad kopieren</li>
           <li role="menuitem" class="danger" @click="doDelete(); closeMenu()"><Icon name="trash" />Löschen<kbd>Entf</kbd></li>
           <li class="sep" />

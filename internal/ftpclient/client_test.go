@@ -106,6 +106,19 @@ func dialPlain(t *testing.T, port int) *Client {
 	return c
 }
 
+// dialTLS connects with explicit TLS to a self-signed test server (certificate auto-trusted).
+func dialTLS(t *testing.T, port int) *Client {
+	t.Helper()
+	pins := connections.NewCertPins(filepath.Join(t.TempDir(), "known_certs"))
+	pins.Confirm = func(string, string, string) bool { return true }
+	c, err := Dial(Config{Host: "127.0.0.1", Port: port, User: "u", Password: "p", Mode: Explicit, TLS: pins.TLSConfig("127.0.0.1"), Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(c.Close)
+	return c
+}
+
 func TestFTPBasicOperations(t *testing.T) {
 	root, port := startServer(t, false, ftpserver.ClearOrEncrypted)
 	os.WriteFile(filepath.Join(root, "b.txt"), []byte("hallo äöü"), 0o644)
@@ -134,9 +147,6 @@ func TestFTPBasicOperations(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "renamed")); err != nil {
 		t.Fatal("rename not applied")
-	}
-	if err := c.Chmod("/b.txt", 0o600); !errors.Is(err, remote.ErrNoChmod) {
-		t.Fatalf("chmod err = %v", err)
 	}
 
 	os.WriteFile(filepath.Join(root, "zdir", "f"), []byte("x"), 0o644)
@@ -315,4 +325,37 @@ func contains(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+func TestFTPChmod(t *testing.T) {
+	root, port := startServer(t, false, ftpserver.ClearOrEncrypted)
+	os.WriteFile(filepath.Join(root, "a b.txt"), []byte("x"), 0o644) // a space in the name
+	os.Mkdir(filepath.Join(root, "d"), 0o755)
+	c := dialPlain(t, port)
+
+	if err := c.Chmod("/a b.txt", 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if fi, _ := os.Stat(filepath.Join(root, "a b.txt")); fi.Mode().Perm() != 0o600 {
+		t.Fatalf("perm = %v, want 0600", fi.Mode().Perm())
+	}
+	if err := c.Chmod("/d", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if fi, _ := os.Stat(filepath.Join(root, "d")); fi.Mode().Perm() != 0o700 {
+		t.Fatalf("dir perm = %v", fi.Mode().Perm())
+	}
+	// the connection is still usable afterwards (responses are not out of step)
+	if l, err := c.List("/"); err != nil || len(l.Entries) != 2 {
+		t.Fatalf("list after chmod: %+v, %v", l, err)
+	}
+	if err := c.Chmod("/missing", 0o644); err == nil {
+		t.Fatal("chmod of a missing file succeeded")
+	}
+	if err := c.Chmod("/x\r\nDELE /a b.txt", 0o644); err == nil {
+		t.Fatal("command injection through the path was not rejected")
+	}
+	if _, err := os.Stat(filepath.Join(root, "a b.txt")); err != nil {
+		t.Fatal("file was deleted through an injected command")
+	}
 }
