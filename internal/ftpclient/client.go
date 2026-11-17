@@ -262,7 +262,29 @@ func listInfos(conn *ftp.ServerConn, dir string) ([]info, error) {
 			out = append(out, i)
 		}
 	}
-	return out, nil
+	return dropNested(out), nil
+}
+
+// dropNested removes the descendants from a recursive listing. Some servers
+// answer LIST with the whole tree below the directory, using relative names
+// such as "plugins\bbpress\includes". Entries whose first path segment is
+// another entry of the same listing are such descendants; only the direct
+// children remain.
+func dropNested(list []info) []info {
+	top := make(map[string]bool, len(list))
+	for _, i := range list {
+		if !strings.ContainsAny(i.name, `/\`) {
+			top[i.name] = true
+		}
+	}
+	out := make([]info, 0, len(list))
+	for _, i := range list {
+		if k := strings.IndexAny(i.name, `/\`); k > 0 && top[i.name[:k]] {
+			continue
+		}
+		out = append(out, i)
+	}
+	return out
 }
 
 // stat finds one file or directory. MLST is used when available, otherwise
@@ -474,6 +496,10 @@ func (f *fsView) MkdirAll(p string) error {
 				continue
 			}
 			if err := conn.MakeDir(cur); err != nil {
+				// a parallel transfer may have created it in the meantime
+				if i, serr := stat(conn, cur); serr == nil && i.isDir {
+					continue
+				}
 				return err
 			}
 		}

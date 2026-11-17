@@ -108,3 +108,31 @@ func TestFTPSListShowsPermissions(t *testing.T) {
 		t.Fatalf("entries over TLS: %+v", l.Entries)
 	}
 }
+
+func TestDropNestedRemovesRecursiveListing(t *testing.T) {
+	mk := func(names ...string) []info {
+		out := make([]info, len(names))
+		for i, n := range names {
+			out[i] = info{name: n, isDir: true}
+		}
+		return out
+	}
+	// what a server answering LIST recursively (Windows style separators) sends
+	in := mk("languages", "languages\\plugins", "languages\\themes", "plugins", "plugins\\bbpress",
+		"plugins\\bbpress\\includes\\admin\\assets", "wp-config.php", "uploads/2026/11")
+	got := dropNested(in)
+	want := []string{"languages", "plugins", "wp-config.php", "uploads/2026/11"} // the last has no "uploads" sibling: kept
+	if len(got) != len(want) {
+		t.Fatalf("got %v", got)
+	}
+	for i, w := range want {
+		if got[i].name != w {
+			t.Errorf("entry %d = %q, want %q", i, got[i].name, w)
+		}
+	}
+	// a normal listing is untouched, including names that contain a backslash
+	plain := mk("a", "b", "odd\\name")
+	if got := dropNested(plain); len(got) != 3 {
+		t.Errorf("plain listing changed: %v", got)
+	}
+}
