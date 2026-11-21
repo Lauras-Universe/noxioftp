@@ -81,6 +81,22 @@ func (a *App) startup(ctx context.Context) {
 		return err == nil && (res == "Vertrauen" || res == "Yes")
 	}
 
+	a.hostKeys.ConfirmChanged = func(host string, old []string, now string) bool {
+		res, err := runtime.MessageDialog(ctx, runtime.MessageDialogOptions{
+			Type:  runtime.WarningDialog,
+			Title: "Host-Schlüssel hat sich geändert",
+			Message: fmt.Sprintf("ACHTUNG: Der Server %s meldet einen anderen Schlüssel als beim letzten Mal.\n\n"+
+				"Gespeichert:\n%s\n\nJetzt:\n%s\n\n"+
+				"Das passiert, wenn der Server neu aufgesetzt wurde. Es kann aber auch ein Angriff sein (Man-in-the-Middle).\n"+
+				"Nur fortfahren, wenn der Betreiber oder Hoster den neuen Fingerabdruck bestätigt hat, am besten über einen anderen Weg als diese Verbindung.",
+				host, strings.Join(old, "\n"), now),
+			Buttons:       []string{"Abbrechen", "Neuen Schlüssel vertrauen"},
+			DefaultButton: "Abbrechen",
+			CancelButton:  "Abbrechen",
+		})
+		return err == nil && res == "Neuen Schlüssel vertrauen"
+	}
+
 	a.certPins = connections.NewCertPins(filepath.Join(dir, "known_certs"))
 	a.certPins.Confirm = func(host, fingerprint, verifyErr string) bool {
 		res, err := runtime.MessageDialog(ctx, runtime.MessageDialogOptions{

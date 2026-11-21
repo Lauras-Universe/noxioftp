@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"golang.org/x/crypto/ssh"
@@ -196,5 +197,59 @@ func TestOldProfilesWithoutProtocolBecomeSFTP(t *testing.T) {
 	}
 	if got, _ := s.Get("1"); got.Protocol != ProtoSFTP {
 		t.Fatalf("protocol = %q", got.Protocol)
+	}
+}
+
+func TestHostKeysChangedKeyCanBeAcceptedExplicitly(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "known_hosts")
+	h := NewHostKeys(path)
+	addr := &net.TCPAddr{IP: net.ParseIP("203.0.113.7"), Port: 22}
+	oldKey, newKey, otherKey := testKey(t), testKey(t), testKey(t)
+
+	h.Confirm = func(string, string, string) bool { return true }
+	for host, k := range map[string]ssh.PublicKey{"example.org:22": oldKey, "other.example:22": otherKey} {
+		if err := h.Callback()(host, addr, k); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// refused by default (no ConfirmChanged), and when the user says no
+	if err := h.Callback()("example.org:22", addr, newKey); !errors.Is(err, ErrHostKeyChanged) {
+		t.Fatalf("default: %v", err)
+	}
+	var gotOld []string
+	var gotNow string
+	h.ConfirmChanged = func(host string, old []string, now string) bool { gotOld, gotNow = old, now; return false }
+	if err := h.Callback()("example.org:22", addr, newKey); !errors.Is(err, ErrHostKeyChanged) {
+		t.Fatalf("declined: %v", err)
+	}
+	if len(gotOld) != 1 || gotOld[0] != oldKey.Type()+" "+ssh.FingerprintSHA256(oldKey) || gotNow != newKey.Type()+" "+ssh.FingerprintSHA256(newKey) {
+		t.Fatalf("dialog got old=%v now=%q", gotOld, gotNow)
+	}
+	// still the old key afterwards
+	if err := h.Callback()("example.org:22", addr, oldKey); err != nil {
+		t.Fatalf("old key lost after a declined change: %v", err)
+	}
+
+	// accepted: the new key is stored, the old one is gone, other hosts are untouched
+	h.ConfirmChanged = func(string, []string, string) bool { return true }
+	if err := h.Callback()("example.org:22", addr, newKey); err != nil {
+		t.Fatalf("accepted: %v", err)
+	}
+	h.ConfirmChanged = nil
+	if err := h.Callback()("example.org:22", addr, newKey); err != nil {
+		t.Fatalf("new key not remembered: %v", err)
+	}
+	if err := h.Callback()("example.org:22", addr, oldKey); !errors.Is(err, ErrHostKeyChanged) {
+		t.Fatalf("old key still accepted: %v", err)
+	}
+	if err := h.Callback()("other.example:22", addr, otherKey); err != nil {
+		t.Fatalf("another host was affected: %v", err)
+	}
+	if b, _ := os.ReadFile(path); strings.Count(string(b), "\n") != 2 {
+		t.Fatalf("known_hosts should have exactly 2 lines:\n%s", b)
+	}
+	if fi, _ := os.Stat(path); fi.Mode().Perm() != 0o600 {
+		t.Fatalf("known_hosts permissions = %v", fi.Mode().Perm())
 	}
 }

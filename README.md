@@ -136,7 +136,7 @@ deine Verbindungen gesendet. Wer sie nicht möchte, setzt die Umgebungsvariable 
 
 ## Sicherheit und Datenschutz
 
-- **Host-Schlüssel (SFTP):** Unbekannte Server müssen einmal bestätigt werden (trust on first use). Ein geänderter Schlüssel bricht die Verbindung immer ab
+- **Host-Schlüssel (SFTP):** Unbekannte Server müssen einmal bestätigt werden (trust on first use). Meldet ein bekannter Server einen anderen Schlüssel, bricht die Verbindung ab. Ein Dialog zeigt den gespeicherten und den neuen Fingerabdruck. Nur eine ausdrückliche Bestätigung ersetzt den Schlüssel, etwa wenn der Server neu aufgesetzt wurde. Der Fingerabdruck sollte dann beim Hoster geprüft werden
 - **Zertifikate (FTPS):** Zertifikate öffentlicher Stellen werden normal geprüft. Alle anderen müssen einmal per SHA-256-Fingerabdruck bestätigt werden, jede spätere Änderung bricht die Verbindung ab
 - **Unverschlüsseltes FTP** verlangt vor jeder Verbindung eine ausdrückliche Bestätigung
 - **Geheimnisse** (Passwörter, Passphrasen) liegen im Schlüsselbund von macOS, Windows bzw. Linux, nicht in den Einstellungsdateien

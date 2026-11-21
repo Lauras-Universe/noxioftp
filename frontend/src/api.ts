@@ -10,10 +10,10 @@ function raw(e: unknown): string {
 
 /** Error message without the machine-readable "E_CODE: " prefix. */
 export function errMsg(e: unknown): string {
-  return raw(e).replace(/^E_[A-Z_]+:\s*/, '')
+  return raw(e).replace(/^(?:ssh: handshake failed:\s*)?E_[A-Z_]+:\s*/, '')
 }
 
 /** The "E_CODE" prefix of a backend error, or "". */
 export function errCode(e: unknown): string {
-  return /^(E_[A-Z_]+):/.exec(raw(e))?.[1] ?? ''
+  return /^(?:ssh: handshake failed:\s*)?(E_[A-Z_]+):/.exec(raw(e))?.[1] ?? ''
 }
