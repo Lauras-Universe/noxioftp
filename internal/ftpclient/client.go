@@ -520,6 +520,21 @@ func (f *fsView) Remove(p string) error {
 	})
 }
 
+// Replace swaps a finished upload in: the target is deleted first, since
+// RNTO onto an existing file is not allowed everywhere.
+func (f *fsView) Replace(from, to string) error {
+	return f.c.with(func(conn *ftp.ServerConn) error {
+		if i, err := stat(conn, to); err == nil && !i.isDir {
+			if err := conn.Delete(to); err != nil {
+				return err
+			}
+		}
+		return conn.Rename(from, to)
+	})
+}
+
+func (f *fsView) Chmod(p string, m fs.FileMode) error { return f.c.Chmod(p, uint32(m)) }
+
 func (f *fsView) RemoveAll(p string) error {
 	return f.c.with(func(conn *ftp.ServerConn) error { return removeAll(conn, p) })
 }

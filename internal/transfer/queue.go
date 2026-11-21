@@ -507,17 +507,24 @@ func (q *Queue) copyFile(ctx context.Context, j *Job, srcFS, dstFS FS, src, dst 
 		return err
 	}
 	defer in.Close()
-	out, err := dstFS.Create(dst)
+
+	// Write next to the target and swap it in at the end: an existing file is
+	// never left half-written, and busy targets (running binaries) can be replaced.
+	dir, base := dstFS.Split(dst)
+	tmp := dstFS.Join(dir, "."+base+".noxio-part")
+	old, statErr := dstFS.Stat(dst)
+
+	out, err := dstFS.Create(tmp)
 	if err != nil {
 		return err
 	}
+	closed := false
 	defer func() {
-		cerr := out.Close()
-		if err == nil {
-			err = cerr
+		if !closed {
+			out.Close()
 		}
 		if err != nil {
-			_ = dstFS.Remove(dst) // never leave a partial file behind
+			_ = dstFS.Remove(tmp) // never leave a partial file behind
 		}
 	}()
 
@@ -527,7 +534,19 @@ func (q *Queue) copyFile(ctx context.Context, j *Job, srcFS, dstFS FS, src, dst 
 	} else {
 		_, err = io.Copy(&ctxWriter{ctx: ctx, w: out, onWrite: progress}, in)
 	}
-	return err
+	closed = true
+	if cerr := out.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return err
+	}
+	if statErr == nil && !old.IsDir() {
+		if c, ok := dstFS.(chmodFS); ok {
+			_ = c.Chmod(tmp, old.Mode().Perm()) // keep the permissions (e.g. executable) of the replaced file
+		}
+	}
+	return dstFS.Replace(tmp, dst)
 }
 
 type ctxReader struct {

@@ -223,3 +223,49 @@ func TestSinglePathCreatesMissingParents(t *testing.T) {
 		t.Fatalf("job = %+v", j)
 	}
 }
+
+// Overwriting keeps the permissions of the old file (e.g. an executable) and
+// leaves no temporary file behind.
+func TestOverwriteKeepsModeAndLeavesNoTempFile(t *testing.T) {
+	q, _ := newQ(t)
+	src, dst := t.TempDir(), t.TempDir()
+	write(t, filepath.Join(src, "app"), "new binary")
+	to := filepath.Join(dst, "app")
+	write(t, to, "old binary")
+	if err := os.Chmod(to, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	j := waitFinal(t, q, q.Enqueue(Upload, "app", filepath.Join(src, "app"), to, Overwrite).ID)
+	if j.Status != Done {
+		t.Fatalf("job = %+v", j)
+	}
+	if b, _ := os.ReadFile(to); string(b) != "new binary" {
+		t.Fatalf("content = %q", b)
+	}
+	if fi, _ := os.Stat(to); fi.Mode().Perm() != 0o755 {
+		t.Fatalf("mode = %v, want 0755", fi.Mode().Perm())
+	}
+	entries, _ := os.ReadDir(dst)
+	if len(entries) != 1 {
+		t.Fatalf("leftover files in target dir: %v", entries)
+	}
+}
+
+// A failing transfer must not destroy the file that was supposed to be replaced.
+func TestFailedOverwriteKeepsOldFile(t *testing.T) {
+	q, _ := newQ(t)
+	src, dst := t.TempDir(), t.TempDir()
+	to := filepath.Join(dst, "f.txt")
+	write(t, to, "old")
+	// source is a directory name that cannot be read as a file → copy fails
+	missing := filepath.Join(src, "does-not-exist")
+
+	j := waitFinal(t, q, q.Enqueue(Upload, "f.txt", missing, to, Overwrite).ID)
+	if j.Status != Failed {
+		t.Fatalf("job = %+v", j)
+	}
+	if b, _ := os.ReadFile(to); string(b) != "old" {
+		t.Fatalf("old file damaged: %q", b)
+	}
+}

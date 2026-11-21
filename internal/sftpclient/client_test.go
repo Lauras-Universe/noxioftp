@@ -154,3 +154,22 @@ func TestDialRequiresHostKeyCallback(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// Replace swaps a finished upload over an existing file via SFTP.
+func TestRemoteFSReplaceOverwritesExistingFile(t *testing.T) {
+	c := newTestClient(t)
+	dir := t.TempDir()
+	old, tmp := filepath.Join(dir, "app"), filepath.Join(dir, ".app.noxio-part")
+	os.WriteFile(old, []byte("old"), 0o755)
+	os.WriteFile(tmp, []byte("new"), 0o600)
+
+	if err := c.FS().Replace(tmp, old); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(old); string(b) != "new" {
+		t.Fatalf("content = %q", b)
+	}
+	if _, err := os.Stat(tmp); !os.IsNotExist(err) {
+		t.Fatal("temp file still there")
+	}
+}
